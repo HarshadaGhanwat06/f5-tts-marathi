@@ -78,6 +78,7 @@ failed_samples.csv.
 
 Usage:
     python generate_dataset.py [--limit N] [--overwrite]
+    python generate_dataset.py --validate
 """
 
 import argparse
@@ -355,6 +356,215 @@ async def process_sample(idx: int, total: int, text: str, overwrite: bool) -> di
 
 
 # ---------------------------------------------------------------------------
+# Dataset validation (Phase 4)
+# ---------------------------------------------------------------------------
+def validate_dataset(sentences: list) -> int:
+    """Validate the generated dataset (audio + text). Returns exit code."""
+    issues = []
+
+    print("\n" + "=" * 60)
+    print("DATASET VALIDATION")
+    print("=" * 60)
+
+    # ------------------------------------------------------------
+    # 1. Text validation
+    # ------------------------------------------------------------
+    print("\n[Text Validation]")
+    text_issues = []
+
+    if not sentences:
+        text_issues.append("sentences.txt contains no non-empty lines")
+
+    # Empty transcripts
+    empties = [i + 1 for i, s in enumerate(sentences) if s == ""]
+    if empties:
+        text_issues.append(f"Empty transcripts at lines: {empties[:20]}{'...' if len(empties) > 20 else ''}")
+
+    # Duplicate transcripts
+    seen = {}
+    dups = []
+    for i, s in enumerate(sentences, start=1):
+        if s in seen:
+            dups.append((i, s))
+        else:
+            seen[s] = i
+    if dups:
+        msg = "Duplicate transcripts: " + ", ".join(
+            f"line {i} -> first at line {seen[s]}" for i, s in dups[:20])
+        if len(dups) > 20:
+            msg += f" (and {len(dups) - 20} more)"
+        text_issues.append(msg)
+
+    # Invalid characters: anything not valid Devanagari/whitespace/punct
+    import unicodedata
+    invalid_chars = {}
+    for i, s in enumerate(sentences, start=1):
+        for ch in s:
+            if ch.isspace():
+                continue
+            name = unicodedata.name(ch, "")
+            is_marathi = (0x0900 <= ord(ch) <= 0x097F)
+            is_ascii_print = (0x20 <= ord(ch) <= 0x7E)
+            is_general_punct = (0x2000 <= ord(ch) <= 0x206F)
+            if not (is_marathi or is_ascii_print or is_general_punct):
+                invalid_chars.setdefault(ord(ch), []).append(i)
+    if invalid_chars:
+        details = ", ".join(
+            f"U+{cp:04X} ({chr(cp)}) at lines {chrs[:10]}{'...' if len(chrs) > 10 else ''}"
+            for cp, chrs in list(invalid_chars.items())[:20])
+        text_issues.append(f"Invalid characters found: {details}")
+
+    # ------------------------------------------------------------
+    # 2. Audio / metadata consistency
+    # ------------------------------------------------------------
+    print("\n[Audio Validation]")
+
+    # Load metadata.csv if present
+    metadata_rows = {}
+    expected_ids = {f"{i:04d}" for i in range(1, len(sentences) + 1)}
+    if os.path.isfile(METADATA_CSV):
+        with open(METADATA_CSV, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                metadata_rows[row["id"]] = row
+    else:
+        text_issues.append(f"metadata.csv not found: {METADATA_CSV}")
+
+    # Missing audio files
+    missing_audio = [f"{i:04d}.wav" for i in range(1, len(sentences) + 1)
+                     if not os.path.isfile(os.path.join(OUTPUT_DIR, f"{i:04d}.wav"))]
+    if missing_audio:
+        audio_issues = missing_audio
+    else:
+        audio_issues = []
+
+    # Missing metadata rows
+    missing_meta = sorted(expected_ids - set(metadata_rows.keys()))
+    if missing_meta:
+        text_issues.append(f"Missing metadata rows for ids: {missing_meta[:20]}{'...' if len(missing_meta) > 20 else ''}")
+
+    audio_problems = []
+    durations = []
+    leading_tail_probs = 0
+    for i in range(1, len(sentences) + 1):
+        fid = f"{i:04d}"
+        wav_path = os.path.join(OUTPUT_DIR, f"{fid}.wav")
+        if not os.path.isfile(wav_path):
+            continue
+
+        try:
+            with wave.open(wav_path, "rb") as wf:
+                channels = wf.getnchannels()
+                sampwidth = wf.getsampwidth()
+                framerate = wf.getframerate()
+                nframes = wf.getnframes()
+            dur = nframes / float(framerate) if framerate else 0.0
+            durations.append(dur)
+            size = os.path.getsize(wav_path)
+
+            if size <= 0:
+                audio_problems.append(f"{fid}: empty file (size 0)")
+            if channels <= 0 or sampwidth <= 0 or framerate <= 0:
+                audio_problems.append(
+                    f"{fid}: invalid WAV props (ch={channels} sw={sampwidth} sr={framerate})")
+            if dur <= 0:
+                audio_problems.append(f"{fid}: zero duration")
+
+            # Rough silence detection (first/last 5% RMS)
+            if sampwidth == 2 and framerate > 0 and nframes > 0:
+                with wave.open(wav_path, "rb") as wf:
+                    raw = wf.readframes(nframes)
+                import array
+                samples = array.array("h")
+                samples.frombytes(raw[: min(len(raw), 2 * 160000)])  # 10s cap
+                n = len(samples)
+                if n > 0:
+                    window = max(1, n // 20)
+                    head = samples[:window]
+                    tail = samples[-window:] if window > 0 else samples
+                    def rms(a):
+                        if len(a) == 0:
+                            return 0.0
+                        s = sum((x / 32768.0) ** 2 for x in a)
+                        return (s / len(a)) ** 0.5
+                    h = rms(head)
+                    t = rms(tail)
+                    if h < 0.001:
+                        audio_problems.append(f"{fid}: excessive leading silence")
+                        leading_tail_probs += 1
+                    if t < 0.001:
+                        audio_problems.append(f"{fid}: excessive trailing silence")
+                        leading_tail_probs += 1
+
+        except Exception as exc:
+            audio_problems.append(f"{fid}: cannot open WAV ({exc})")
+
+    # Abnormally short/long
+    short = [f"{i:04d}" for i, d in enumerate(durations, start=1) if d < 5.0]
+    long_ = [f"{i:04d}" for i, d in enumerate(durations, start=1) if d > 12.0]
+    if short:
+        audio_problems.append(
+            f"{len(short)} samples < 5.0s (e.g. {short[:10]}{'...' if len(short) > 10 else ''})")
+    if long_:
+        audio_problems.append(
+            f"{len(long_)} samples > 12.0s (e.g. {long_[:10]}{'...' if len(long_) > 10 else ''})")
+
+    # ------------------------------------------------------------
+    # Report
+    # ------------------------------------------------------------
+    if text_issues:
+        print("\n  TEXT ISSUES:")
+        for t in text_issues:
+            print(f"    - {t}")
+
+    if audio_issues:
+        print("\n  MISSING AUDIO FILES:")
+        print(f"    - {len(audio_issues)} files missing: {audio_issues[:20]}{'...' if len(audio_issues) > 20 else ''}")
+
+    if audio_problems:
+        print("\n  AUDIO ISSUES:")
+        for a in audio_problems:
+            print(f"    - {a}")
+
+    total_dur = sum(durations)
+    print("\n" + "-" * 60)
+    print(f"WAV files present   : {len(durations)}")
+    print(f"Missing WAV files   : {len(audio_issues)}")
+    print(f"Text issues         : {len(text_issues)}")
+    print(f"Audio issues        : {len(audio_problems)}")
+    if durations:
+        print(f"Total duration      : {total_dur/60:.2f} minutes")
+        print(f"Min duration        : {min(durations):.2f} s")
+        print(f"Max duration        : {max(durations):.2f} s")
+        print(f"Avg duration        : {statistics.mean(durations):.2f} s")
+        # Sample rate / channels consistency
+        srs = set()
+        chs = set()
+        for i in range(1, len(sentences) + 1):
+            p = os.path.join(OUTPUT_DIR, f"{i:04d}.wav")
+            if os.path.isfile(p):
+                try:
+                    with wave.open(p, "rb") as wf:
+                        srs.add(wf.getframerate())
+                        chs.add(wf.getnchannels())
+                except Exception:
+                    pass
+        print(f"Sample rates present: {sorted(srs)}")
+        print(f"Channels present    : {sorted(chs)}")
+    print("\n" + "=" * 60)
+
+    # Targets to manually confirm via listening
+    print("\n[Manual Check Required - listen to these]")
+    print("  Confirm correct pronunciation of target words embedded in Marathi:")
+    print("  office, drawing, meeting, project, computer")
+    print("  (e.g. ड्रॉइंग, ब्यूटिफुल, ऑफिस, मीटिंग, प्रोजेक्ट)")
+
+    n_issues = len(audio_issues) + len(text_issues) + len(audio_problems)
+    print("\nVALIDATION RESULT:", "PASS (no issues)" if n_issues == 0 else f"FAIL ({n_issues} issue(s))")
+    return 0 if n_issues == 0 else 2
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 async def main() -> int:
@@ -363,6 +573,8 @@ async def main() -> int:
                         help="Only synthesize the first N sentences (test mode)")
     parser.add_argument("--overwrite", action="store_true",
                         help="Regenerate existing WAV files")
+    parser.add_argument("--validate", action="store_true",
+                        help="Validate the generated dataset without synthesizing")
     args = parser.parse_args()
 
     if not os.path.isfile(SENTENCES_FILE):
@@ -376,6 +588,12 @@ async def main() -> int:
     print(f"Total non-empty sentences found: {total}")
     if total != 200:
         print(f"[WARN] Expected 200 sentences but found {total}.", file=sys.stderr)
+
+    # ------------------------------------------------------------------
+    # --validate mode : check the generated dataset, no synthesis
+    # ------------------------------------------------------------------
+    if args.validate:
+        return await validate_dataset(sentences)
 
     if args.limit is not None:
         sentences = sentences[:args.limit]
@@ -508,15 +726,23 @@ fi
 # ---------------------------------------------------------------------------
 cd "$TEST_DIR"
 
-if [[ "${1:-}" == "--full" ]]; then
-    echo "[INFO] Running FULL generation (all sentences)."
-    python3 generate_dataset.py
-else
-    echo "[INFO] Running 5-SAMPLE TEST mode."
-    echo "[INFO] This synthesizes only the first 5 sentences."
-    echo ""
-    python3 generate_dataset.py --limit 5
-fi
+MODE="${1:-test}"
+case "$MODE" in
+    --full)
+        echo "[INFO] Running FULL generation (all sentences)."
+        python3 generate_dataset.py
+        ;;
+    --validate)
+        echo "[INFO] Running DATASET VALIDATION only (no synthesis)."
+        python3 generate_dataset.py --validate
+        ;;
+    *)
+        echo "[INFO] Running 5-SAMPLE TEST mode."
+        echo "[INFO] This synthesizes only the first 5 sentences."
+        echo ""
+        python3 generate_dataset.py --limit 5
+        ;;
+esac
 
 EXIT_CODE=$?
 echo ""
