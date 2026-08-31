@@ -35,7 +35,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Default paths (server layout)
 RASA_AUDIO_DIR="${RASA_AUDIO_DIR:-/root/f5-tts-marathi/rasa_female_emotions/wavs_female/train}"
-RASA_METADATA_CSV="${RASA_METADATA_CSV:-$RASA_AUDIO_DIR/rasa_train_metadata.csv}"
+RASA_METADATA_CSV="${RASA_METADATA_CSV:-/root/f5-tts-marathi/rasa_female_emotions/rasa_train_metadata.csv}"
 CARTESIA_OUTPUT_DIR="${CARTESIA_OUTPUT_DIR:-/root/f5-tts-marathi/cartesia_ws/output}"
 CARTESIA_SENTENCES="${CARTESIA_SENTENCES:-/root/f5-tts-marathi/cartesia_ws/cartesia_dataset/sentences.txt}"
 TARGET_SECONDS="${TARGET_SECONDS:-10800}"
@@ -89,7 +89,7 @@ RASA_AUDIO_DIR = os.environ.get(
     "/root/f5-tts-marathi/rasa_female_emotions/wavs_female/train")
 RASA_METADATA_CSV = os.environ.get(
     "RASA_METADATA_CSV",
-    os.path.join(RASA_AUDIO_DIR, "rasa_train_metadata.csv"))
+    "/root/f5-tts-marathi/rasa_female_emotions/rasa_train_metadata.csv")
 CARTESIA_OUTPUT_DIR = os.environ.get(
     "CARTESIA_OUTPUT_DIR",
     "/root/f5-tts-marathi/cartesia_ws/output")
