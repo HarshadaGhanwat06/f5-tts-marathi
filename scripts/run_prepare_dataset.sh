@@ -22,11 +22,10 @@
 #
 # Configurable via env (defaults below):
 #   RASA_AUDIO_DIR       - Rasa audio dir (default: /root/f5-tts-marathi/rasa_female_emotions/wavs_female/train)
-#   RASA_METADATA_CSV    - Rasa metadata CSV (default: <rasa dir>/rasa_train_metadata.csv)
+#   RASA_METADATA_CSV    - Rasa metadata CSV (default: /root/f5-tts-marathi/rasa_female_emotions/rasa_train_metadata.csv)
 #   CARTESIA_OUTPUT_DIR  - Cartesia output dir (default: /root/f5-tts-marathi/cartesia_ws/output)
 #   CARTESIA_SENTENCES   - Cartesia sentences.txt (default: /root/f5-tts-marathi/cartesia_ws/cartesia_dataset/sentences.txt)
 #   TARGET_SECONDS       - Target Rasa duration (default: 10800)
-#   MIN_SAMPLES_PER_CAT  - Minimum samples per category (default: 3)
 #
 set -euo pipefail
 
@@ -39,7 +38,6 @@ RASA_METADATA_CSV="${RASA_METADATA_CSV:-/root/f5-tts-marathi/rasa_female_emotion
 CARTESIA_OUTPUT_DIR="${CARTESIA_OUTPUT_DIR:-/root/f5-tts-marathi/cartesia_ws/output}"
 CARTESIA_SENTENCES="${CARTESIA_SENTENCES:-/root/f5-tts-marathi/cartesia_ws/cartesia_dataset/sentences.txt}"
 TARGET_SECONDS="${TARGET_SECONDS:-10800}"
-MIN_SAMPLES_PER_CAT="${MIN_SAMPLES_PER_CAT:-3}"
 
 OUT_DIR="/root/f5-tts-marathi/cartesia_ws/cartesia_rasa_3h_combined"
 
@@ -97,7 +95,6 @@ CARTESIA_SENTENCES = os.environ.get(
     "CARTESIA_SENTENCES",
     "/root/f5-tts-marathi/cartesia_ws/cartesia_dataset/sentences.txt")
 TARGET_SECONDS = int(os.environ.get("TARGET_SECONDS", "10800"))
-MIN_SAMPLES_PER_CAT = int(os.environ.get("MIN_SAMPLES_PER_CAT", "3"))
 
 OUT_DIR = os.environ.get(
     "OUT_DIR",
@@ -107,8 +104,6 @@ METADATA_CSV = os.path.join(OUT_DIR, "metadata.csv")
 SUMMARY_TXT = os.path.join(OUT_DIR, "dataset_summary.txt")
 SELECTION_LOG = os.path.join(OUT_DIR, "selection_log.csv")
 
-CONTENT_CATS = {"NAMES", "WIKI", "CONV", "BOOK", "NEWS", "INDIC",
-                "ALEXA", "BB", "UMANG", "DIGI"}
 EMOTION_CATS = {"ANGER", "HAPPY", "FEAR", "SAD", "DISGUST", "SURPRISE"}
 
 
@@ -232,59 +227,105 @@ def inspect_wavs(samples):
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 — stratified selection toward ~TARGET_SECONDS
+# Phase 2 — proportional stratified duration-based selection.
+#
+# Selects ~TARGET_SECONDS of Rasa audio such that each category's selected
+# duration mirrors its proportion of the original valid dataset. Selection is
+# based on AUDIO DURATION, not sample count. Small categories are still
+# represented, and emotional categories keep their original weight. No
+# category is starved to feed WIKI.
 # ---------------------------------------------------------------------------
 def select_rasa(valid, target_seconds):
-    random.seed(42)  # reproducible
+    seed = 42  # reproducible
+    random.seed(seed)
 
+    # Group valid samples by category.
     cats = {}
     for s in valid:
         cats.setdefault(s["category"], []).append(s)
     for c in cats:
         random.shuffle(cats[c])
 
-    # Category order balanced between content and emotion, keep all.
-    cat_names = list(cats.keys())
-    cat_names.sort(key=lambda c: (
-        0 if c in CONTENT_CATS else 1, len(cats[c]) * -1))
+    cat_names = sorted(cats.keys())
+    total_valid_dur = sum(s["duration"] for s in valid)
+    if total_valid_dur <= 0:
+        return [], 0.0
+
+    # Proportion per category = category duration / total valid duration.
+    cat_dur = {c: sum(s["duration"] for s in cats[c]) for c in cat_names}
+
+    # Allocate target duration per category proportionally.
+    targets = {c: (cat_dur[c] / total_valid_dur) * target_seconds
+               for c in cat_names}
 
     selected = []
-    total = 0.0
-    min_per_cat = MIN_SAMPLES_PER_CAT
+    selected_dur_by_cat = {c: 0.0 for c in cat_names}
+    buckets = {c: list(cats[c]) for c in cat_names}
 
-    # Pass 1: guarantee minimum per category (for diversity)
-    for c in cat_names:
-        bucket = cats[c]
-        n_min = min(min_per_cat, len(bucket))
-        for s in bucket[:n_min]:
-            if total >= target_seconds:
-                break
-            selected.append(s)
-            total += s["duration"]
-            bucket.remove(s)
-        if total >= target_seconds:
+    # Per-category round-robin pass: fill each category toward its target
+    # duration, moving back and forth so no category is starved.
+    while True:
+        progressed = False
+        for c in cat_names:
+            if not buckets[c]:
+                continue
+            # Stop filling a category if it has reached its target.
+            if selected_dur_by_cat[c] >= targets[c]:
+                continue
+            s = buckets[c][0]
+            new_cat_total = selected_dur_by_cat[c] + s["duration"]
+            # Take the sample unless it overshoots this category's target.
+            if new_cat_total <= targets[c] + 2.0:
+                buckets[c].pop(0)
+                selected.append(s)
+                selected_dur_by_cat[c] = new_cat_total
+                progressed = True
+
+        # Update running total.
+        total = sum(selected_dur_by_cat.values())
+
+        # Stop when we reach the target range, or nothing progressed, or
+        # everything is exhausted.
+        if total >= target_seconds - 5:
+            break
+        if not progressed:
             break
 
-    # Pass 2: fill remaining, interleaving categories to preserve diversity.
-    # Keep the category with the largest remaining duration in front so the
-    # distribution roughly mirrors the source dataset.
-    while total < target_seconds:
-        leftovers = [c for c in cat_names if cats[c]]
-        if not leftovers:
-            break
-        best = max(leftovers, key=lambda c: sum(x["duration"] for x in cats[c]))
-        s = cats[best].pop(0)
-        new_total = total + s["duration"]
-        if new_total <= target_seconds + 15:
-            selected.append(s)
-            total = new_total
-            continue
-        # This sample would overshoot; only take it if we cannot otherwise
-        # reach the target range with the remaining pool.
-        remaining = sum(x["duration"] for c in leftovers for x in cats[c])
-        if total + remaining < target_seconds - 300:
-            selected.append(s)
-            total = new_total
+    total = sum(selected_dur_by_cat.values())
+
+    # Final adjustment: if we are meaningfully below target but there is
+    # unused audio available, fill the shortfall proportionally across
+    # categories using their remaining audio, respecting each category's
+    # original proportion as much as possible.
+    if total < target_seconds - 60:
+        remaining = {c: sum(x["duration"] for x in buckets[c]) for c in cat_names}
+        total_remaining = sum(remaining.values())
+        if total_remaining > 0:
+            # Desired fill per category proportional to original distribution.
+            round_robin = sorted(cat_names,
+                                 key=lambda c: -remaining[c])
+            while total < target_seconds and total_remaining > 0:
+                progressed = False
+                for c in round_robin:
+                    if not buckets[c]:
+                        continue
+                    s = buckets[c][0]
+                    new_total = total + s["duration"]
+                    # Avoid severe overshoot; drop to next category if too big.
+                    if new_total <= target_seconds + 10:
+                        buckets[c].pop(0)
+                        selected.append(s)
+                        selected_dur_by_cat[c] += s["duration"]
+                        remaining[c] -= s["duration"]
+                        total_remaining -= s["duration"]
+                        total = new_total
+                        progressed = True
+                    if total >= target_seconds - 5:
+                        break
+                if not progressed:
+                    break
+
+    total = sum(selected_dur_by_cat.values())
     return selected, total
 
 
@@ -358,18 +399,50 @@ def main():
     # ---------------------------------------------------------------
     log("")
     log("=" * 60)
-    log(f"PHASE 2: Selecting ~{TARGET_SECONDS}s ({TARGET_SECONDS/3600:.2f}h) Rasa audio")
+    log(f"PHASE 2: Selecting ~{TARGET_SECONDS}s ({TARGET_SECONDS/3600:.2f}h) "
+        f"Rasa audio (proportional stratified)")
     log("=" * 60)
+    seed = 42
     chosen, chosen_total = select_rasa(rasa_valid, TARGET_SECONDS)
     log(f"Selected Rasa samples      : {len(chosen)}")
     log(f"Selected Rasa duration     : {chosen_total:.0f} s "
         f"({chosen_total/3600:.2f} h)")
-    sel_by_cat = {}
+    log(f"Selection seed             : {seed}")
+
+    # Original distribution by sample count & by duration
+    orig_counts = {}
+    orig_durs = {}
+    for s in rasa_valid:
+        orig_counts[s["category"]] = orig_counts.get(s["category"], 0) + 1
+        orig_durs[s["category"]] = orig_durs.get(s["category"], 0.0) + s["duration"]
+
+    sel_counts = {}
+    sel_durs = {}
     for s in chosen:
-        sel_by_cat[s["category"]] = sel_by_cat.get(s["category"], 0) + 1
-    log("Selection by category:")
-    for c in sorted(sel_by_cat):
-        log(f"  - {c}: {sel_by_cat[c]}")
+        sel_counts[s["category"]] = sel_counts.get(s["category"], 0) + 1
+        sel_durs[s["category"]] = sel_durs.get(s["category"], 0.0) + s["duration"]
+
+    total_valid_dur = sum(orig_durs.values()) or 1.0
+    sel_dur_total = sum(sel_durs.values()) or 1.0
+
+    log("")
+    log("Original category distribution:")
+    for c in sorted(orig_counts):
+        log(f"  {c}: {orig_counts[c]} samples, {orig_durs[c]:.0f}s "
+            f"({orig_durs[c]/total_valid_dur*100:.1f}%)")
+
+    log("")
+    log("Selected category distribution:")
+    for c in sorted(sel_counts):
+        log(f"  {c}: {sel_counts[c]} samples, {sel_durs[c]:.0f}s "
+            f"({sel_durs[c]/sel_dur_total*100:.1f}%)")
+
+    log("")
+    log("Category | Original % | Selected % | Selected Duration")
+    for c in sorted(set(orig_counts) | set(sel_counts)):
+        op = (orig_durs.get(c, 0.0) / total_valid_dur * 100)
+        sp = (sel_durs.get(c, 0.0) / sel_dur_total * 100)
+        log(f"  {c:<10} | {op:9.1f}% | {sp:10.1f}% | {sel_durs.get(c,0.0):8.0f}s")
 
     # ---------------------------------------------------------------
     log("")
@@ -422,6 +495,8 @@ def main():
             "text": s["text"],
             "duration_seconds": round(s["duration"], 6),
             "selection_reason": reason,
+            "category": s["category"],
+            "selection_seed": seed,
         })
 
     rasa_dur = sum(r["duration_seconds"] for r in meta_rows)
@@ -455,7 +530,7 @@ def main():
     with open(SELECTION_LOG, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "source_file", "output_file", "text", "duration_seconds",
-            "selection_reason"])
+            "selection_reason", "category", "selection_seed"])
         writer.writeheader()
         writer.writerows(selection_rows)
     log(f"selection_log.csv written  : {len(selection_rows)} rows -> {SELECTION_LOG}")
@@ -509,13 +584,17 @@ def main():
     summary.append(
         "  - Invalid/missing samples excluded and reported.")
     summary.append(
-        "  - Stratified/random (seed=42) selection across the filename category "
-        "tokens")
+        "  - Proportional stratified selection by AUDIO DURATION (seed=42):")
     summary.append(
-        "    (content + emotion categories) to preserve diversity.")
+        "      category target duration = (category duration / total valid ")
     summary.append(
-        "  - Selection targets ~10800 s; guaranteed a minimum of "
-        f"{MIN_SAMPLES_PER_CAT} per category.")
+        "                                duration) x target seconds.")
+    summary.append(
+        "  - Each category is filled toward its proportional target; the ")
+    summary.append(
+        "    original dataset distribution remains the primary guide so no")
+    summary.append(
+        "    single category (e.g. WIKI) dominates the subset.")
     summary.append(
         "  - Audio copied under unique names rasa_NNNNNN.wav / "
         "cartesia_NNNNNN.wav; originals untouched.")
