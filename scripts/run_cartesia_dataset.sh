@@ -714,6 +714,323 @@ echo "[INFO] Created: $TEST_DIR/generate_dataset.py"
 echo ""
 
 # ---------------------------------------------------------------------------
+# Generate the dataset-combination Python script (Phase 5)
+# ---------------------------------------------------------------------------
+cat > "$TEST_DIR/combine_dataset.py" <<'COMBINE_EOF'
+#!/usr/bin/env python3
+"""
+Phase 5 - Combine the existing Marathi dataset with the Cartesia code-mixed
+dataset into a single reproducible F5-TTS fine-tuning dataset.
+
+Existing Marathi dataset  (majority)  : datasets/syspin_marathi_female/metadata_5h.csv
+Cartesia code-mixed dataset (targeted): cartesia_ws/cartesia_dataset/metadata.csv
+
+Outputs:
+  datasets/combined/metadata_combined.csv       (F5-TTS format  audio_file|text)
+  datasets/combined/metadata_cartesia_f5tts.csv (Cartesia component only)
+  datasets/combined/dataset_composition.json    (version + counts + provenance)
+  datasets/combined/cartesia/<NNNN>.wav         (resampled Cartesia audio copies)
+
+No existing Marathi sample is modified or lost.
+"""
+
+import csv
+import json
+import os
+import re
+import sys
+import wave
+from collections import Counter
+from pathlib import Path
+
+try:
+    import soundfile as sf
+    import numpy as np
+    import librosa
+    AUDIO_OK = True
+except Exception as e:  # pragma: no cover
+    AUDIO_OK = False
+    print(f"[WARN] audio libs unavailable: {e}")
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
+
+SYSPIN_META = os.path.join(
+    REPO_ROOT, "datasets", "syspin_marathi_female", "metadata_5h.csv")
+CARTESIA_META = os.path.join(
+    BASE_DIR, "cartesia_dataset", "metadata.csv")
+CARTESIA_AUDIO_DIR = os.path.join(BASE_DIR, "output")
+
+VOCAB_FILE = os.path.join(
+    REPO_ROOT, "models", "openbible-marathi", "vocab.txt")
+
+COMBINED_DIR = os.path.join(REPO_ROOT, "datasets", "combined")
+CARTESIA_COPY_DIR = os.path.join(COMBINED_DIR, "cartesia")
+COMBINED_META = os.path.join(COMBINED_DIR, "metadata_combined.csv")
+CARTESIA_META_F5TTS = os.path.join(COMBINED_DIR, "metadata_cartesia_f5tts.csv")
+COMPOSITION_JSON = os.path.join(COMBINED_DIR, "dataset_composition.json")
+
+DATASET_VERSION = "v1.0"
+
+
+# ---------------------------------------------------------------------------
+# Reuse the same normalization as prepare_syspin.py for consistency
+# ---------------------------------------------------------------------------
+DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+QUOTE_MAP = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
+REPLACEMENTS = {
+    "ॅ": "े", "ँ": "ं", "ऑ": "ओ", "ॲ": "अ",
+    "ङ": "न", "ॊ": "ो", ";": "",
+}
+
+
+def normalize(text: str) -> str:
+    text = text.translate(DEVANAGARI_DIGITS)
+    text = text.translate(QUOTE_MAP)
+    for old, new in REPLACEMENTS.items():
+        text = text.replace(old, new)
+    for char in "{}|/":
+        text = text.replace(char, "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Loaders
+# ---------------------------------------------------------------------------
+def read_f5tts_metadata(path: str) -> list:
+    """Read F5-TTS metadata: audio_file|text (pipe-delimited, no header)."""
+    rows = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n\r")
+            if not line.strip():
+                continue
+            # split only on the first pipe (text may contain '|' removed, but be safe)
+            parts = line.split("|", 1)
+            if len(parts) != 2:
+                raise ValueError(f"Malformed line in {path}: {line!r}")
+            audio_file, text = parts
+            rows.append({"audio_file": audio_file.strip(), "text": text.strip()})
+    return rows
+
+
+def read_cartesia_metadata(path: str) -> list:
+    rows = []
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(row)
+    return rows
+
+
+def detect_syspin_audio_format(rows) -> dict:
+    """Detect the dominant sample rate / channels from existing SYSPIN audio."""
+    sr_counter = Counter()
+    ch_counter = Counter()
+    count = 0
+    for r in rows:
+        p = r["audio_file"]
+        if count >= 20:
+            break
+        if not os.path.isfile(p):
+            continue
+        try:
+            with wave.open(p, "rb") as wf:
+                sr_counter[wf.getframerate()] += 1
+                ch_counter[wf.getnchannels()] += 1
+                count += 1
+        except Exception:
+            continue
+    if not sr_counter:
+        raise RuntimeError(
+            "Could not read any SYSPIN WAV to detect audio format. "
+            "Check that the extracted audio exists.")
+    return {
+        "sample_rate": sr_counter.most_common(1)[0][0],
+        "channels": ch_counter.most_common(1)[0][0],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main() -> int:
+    # 1. Load existing SYSPIN subset
+    if not os.path.isfile(SYSPIN_META):
+        print(f"[ERROR] Existing Marathi metadata not found: {SYSPIN_META}", file=sys.stderr)
+        return 1
+    syspin_rows = read_f5tts_metadata(SYSPIN_META)
+    print(f"Existing Marathi dataset (metadata_5h.csv): {len(syspin_rows)} rows")
+
+    # 2. Load Cartesia code-mixed dataset
+    if not os.path.isfile(CARTESIA_META):
+        print(f"[ERROR] Cartesia metadata not found: {CARTESIA_META}", file=sys.stderr)
+        return 1
+    cart_rows = read_cartesia_metadata(CARTESIA_META)
+    print(f"Cartesia code-mixed dataset (metadata.csv): {len(cart_rows)} rows")
+
+    # 3. Audio format consistency
+    print("\n[Audio format]")
+    target_fmt = detect_syspin_audio_format(syspin_rows)
+    print(f"  Existing (SYSPIN) dominant format: {target_fmt['sample_rate']} Hz, "
+          f"{target_fmt['channels']} ch")
+
+    os.makedirs(CARTESIA_COPY_DIR, exist_ok=True)
+
+    # 4. Build Cartesia F5-TTS rows (normalize text, resample audio, abs paths)
+    print("\n[Building Cartesia component]")
+    cart_f5tts_rows = []
+    missing = []
+    oov_counter = Counter()
+
+    with open(VOCAB_FILE, "r", encoding="utf-8") as f:
+        vocab = set(line.rstrip("\n\r") for line in f)
+
+    for row in cart_rows:
+        fid = row.get("id", "").strip()
+        text = row.get("text", "").strip()
+        norm_text = normalize(text)
+
+        src_wav = os.path.join(CARTESIA_AUDIO_DIR, f"{fid}.wav")
+        dst_wav = os.path.join(CARTESIA_COPY_DIR, f"{fid}.wav")
+
+        if not os.path.isfile(src_wav):
+            missing.append(fid)
+            continue
+
+        # Resample Cartesia audio to the SYSPIN sample rate for consistency
+        if AUDIO_OK:
+            try:
+                y, sr = librosa.load(src_wav, sr=None, mono=True)
+                if sr != target_fmt["sample_rate"]:
+                    y = librosa.resample(
+                        y, orig_sr=sr, target_sr=target_fmt["sample_rate"])
+                sf.write(dst_wav, y, target_fmt["sample_rate"], subtype="PCM_16")
+            except Exception as exc:
+                print(f"[WARN] Could not resample {fid}.wav: {exc}; keeping original")
+                # fall back to a direct copy of original
+                import shutil
+                shutil.copyfile(src_wav, dst_wav)
+        else:
+            import shutil
+            shutil.copyfile(src_wav, dst_wav)
+
+        for ch in norm_text:
+            if ch not in vocab:
+                oov_counter[ch] += 1
+
+        cart_f5tts_rows.append({
+            "id": fid,
+            "audio_file": os.path.abspath(dst_wav),
+            "text": norm_text,
+        })
+
+    print(f"  Cartesia rows included  : {len(cart_f5tts_rows)}")
+    print(f"  Cartesia rows missing   : {len(missing)}")
+    if missing:
+        print(f"  Missing wav ids: {missing[:20]}{'...' if len(missing) > 20 else ''}")
+
+    # 5. OOV check on Cartesia text
+    print("\n[OOV check against vocab]")
+    if oov_counter:
+        print(f"  OOV characters in Cartesia text: {len(oov_counter)}")
+        for ch, c in oov_counter.most_common():
+            print(f"    {repr(ch)} U+{ord(ch):04X} : {c}")
+    else:
+        print("  ZERO OOV characters in Cartesia text")
+
+    # 6. Write component CSV (F5-TTS format)
+    with open(CARTESIA_META_F5TTS, "w", encoding="utf-8", newline="") as f:
+        for r in cart_f5tts_rows:
+            f.write(f"{r['audio_file']}|{r['text']}\n")
+    print(f"\n[INFO] Wrote Cartesia F5-TTS component: {CARTESIA_META_F5TTS}")
+
+    # 7. Build combined metadata (existing + cartesia), no loss of existing rows
+    combined_rows = []
+    for r in syspin_rows:
+        r2 = dict(r)
+        # Existing rows keep their absolute path and original (already-normalized) text
+        combined_rows.append({"audio_file": r2["audio_file"], "text": r2["text"]})
+    for r in cart_f5tts_rows:
+        combined_rows.append({"audio_file": r["audio_file"], "text": r["text"]})
+
+    with open(COMBINED_META, "w", encoding="utf-8", newline="") as f:
+        for r in combined_rows:
+            f.write(f"{r['audio_file']}|{r['text']}\n")
+    print(f"[INFO] Wrote combined metadata: {COMBINED_META}")
+
+    # 8. Composition report + versioning
+    composition = {
+        "dataset_version": DATASET_VERSION,
+        "created_note": "Existing Marathi majority + targeted Cartesia code-mixed.",
+        "existing_marathi": {
+            "source": "datasets/syspin_marathi_female/metadata_5h.csv",
+            "count": len(syspin_rows),
+        },
+        "cartesia_code_mixed": {
+            "source": "cartesia_ws/cartesia_dataset/metadata.csv",
+            "requested": len(cart_rows),
+            "included": len(cart_f5tts_rows),
+            "missing_audio": len(missing),
+        },
+        "combined": {
+            "count": len(combined_rows),
+            "existing_percent": round(100 * len(syspin_rows) / len(combined_rows), 2)
+                if combined_rows else 0.0,
+            "cartesia_percent": round(100 * len(cart_f5tts_rows) / len(combined_rows), 2)
+                if combined_rows else 0.0,
+        },
+        "audio_format": {
+            "sample_rate_hz": target_fmt["sample_rate"],
+            "channels": target_fmt["channels"],
+            "note": "Cartesia audio resampled to match the dominant existing format.",
+        },
+        "oov_characters": len(oov_counter),
+    }
+
+    with open(COMPOSITION_JSON, "w", encoding="utf-8") as f:
+        json.dump(composition, f, ensure_ascii=False, indent=2)
+    print(f"[INFO] Wrote composition report: {COMPOSITION_JSON}")
+
+    # 9. Summary
+    print("\n" + "=" * 60)
+    print("COMBINED DATASET SUMMARY")
+    print("=" * 60)
+    print(f"Existing Marathi : {len(syspin_rows)}")
+    print(f"Cartesia code-mix: {len(cart_f5tts_rows)}")
+    print(f"Combined total   : {len(combined_rows)}")
+    if combined_rows:
+        print(f"Existing ratio   : {composition['combined']['existing_percent']}%")
+        print(f"Cartesia ratio   : {composition['combined']['cartesia_percent']}%")
+    print(f"OOV characters   : {len(oov_counter)}")
+    print(f"Audio format     : {target_fmt['sample_rate']} Hz, "
+          f"{target_fmt['channels']} ch")
+    print(f"Dataset version  : {DATASET_VERSION}")
+    print("=" * 60)
+    print("\nNext step: prepare the combined dataset with F5-TTS")
+    print("  python f5tts/lib/python3.12/site-packages/f5_tts/train/datasets/prepare_csv_wavs.py"
+          "  datasets/combined/metadata_combined.csv  f5tts/data/SYSPIN_Marathi_Combined_5h  --workers 32")
+    print("\nExisting Marathi samples are preserved (no loss).")
+    return 0 if not missing else 2
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        print(f"\n[ERROR] {exc}", file=sys.stderr)
+        sys.exit(1)
+COMBINE_EOF
+
+chmod +x "$TEST_DIR/combine_dataset.py"
+echo "[INFO] Created: $TEST_DIR/combine_dataset.py"
+echo ""
+
+# ---------------------------------------------------------------------------
 # Check websockets dependency (non-fatal; error surfaces on run)
 # ---------------------------------------------------------------------------
 if ! python3 -c "import websockets" 2>/dev/null; then
@@ -735,6 +1052,10 @@ case "$MODE" in
     --validate)
         echo "[INFO] Running DATASET VALIDATION only (no synthesis)."
         python3 generate_dataset.py --validate
+        ;;
+    --combine)
+        echo "[INFO] Running DATASET COMBINATION (SYSPIN + Cartesia)."
+        python3 combine_dataset.py
         ;;
     *)
         echo "[INFO] Running 5-SAMPLE TEST mode."
