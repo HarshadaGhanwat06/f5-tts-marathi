@@ -42,22 +42,24 @@ echo "Output dir      : $OUT_DIR"
 echo ""
 echo "[1] Rendering F5-TTS metadata (audio_file|text, absolute paths)..."
 "$PYTHON" - "$SRC_META" "$SRC_WAVS" "$TMP_CSV" <<'PY'
-import sys, os
+import sys, os, csv
 src, wroot, out = sys.argv[1], sys.argv[2], sys.argv[3]
 n = 0
-with open(src, encoding="utf-8") as f, open(out, "w", encoding="utf-8") as g:
-    header = f.readline()
-    # combined metadata columns: id|text|audio_file|duration_seconds|source(...)
-    for line in f:
-        line = line.rstrip("\n")
-        if not line:
+with open(src, encoding="utf-8", newline="") as f, \
+     open(out, "w", encoding="utf-8") as g:
+    reader = csv.reader(f)
+    header = next(reader, None)
+    # combined metadata.csv is COMMA-delimited: id,text,audio_file,duration_seconds,source
+    for row in reader:
+        if not row or len(row) < 3:
             continue
-        parts = line.split("|")
         # text = col index 1, audio_file = col index 2 (relative "wavs/xxx.wav")
-        text = parts[1]
-        relaudio = parts[2]
+        text = (row[1] or "").strip()
+        relaudio = (row[2] or "").strip()
+        if not text or not relaudio:
+            continue
         abs_audio = os.path.join(wroot, relaudio)
-        # pipe in text would break | delim; escape if present (rare)
+        # pipe in text would break F5-TTS | delim; escape if present
         if "|" in text:
             print("[WARN] text contains |, skipping:", text[:40], file=sys.stderr)
             continue
@@ -67,7 +69,10 @@ print(f"Wrote {n} rows to {out}")
 PY
 
 echo ""
-echo "[2] First 3 lines of metadata for review:"
+echo "[2] Combined metadata header:"
+head -1 "$SRC_META"
+echo ""
+echo "    First 3 rendered rows (absolute_path|text):"
 head -3 "$TMP_CSV"
 
 # ---------------------------------------------------------------------------
