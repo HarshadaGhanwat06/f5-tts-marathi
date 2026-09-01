@@ -50,6 +50,7 @@ with open(src, encoding="utf-8", newline="") as f, \
     reader = csv.reader(f)
     header = next(reader, None)
     # combined metadata.csv is COMMA-delimited: id,text,audio_file,duration_seconds,source
+    g.write("audio_file|text\n")
     for row in reader:
         if not row or len(row) < 3:
             continue
