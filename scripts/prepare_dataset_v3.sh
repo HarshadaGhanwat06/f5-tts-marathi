@@ -87,6 +87,21 @@ echo ""
 echo "[4] Output dir contents:"
 ls -la "$OUT_DIR"
 
+# ---------------------------------------------------------------------------
+# 2b. Symlink into the loader's data root
+# ---------------------------------------------------------------------------
+echo ""
+echo "[4b] Registering symlink for loader at lib/python3.12/data/..."
+LINK_ROOT="/root/f5-tts-marathi/f5tts/lib/python3.12/data"
+LINK_NAME="Cartesia_Rasa_Combined_v3_custom"
+mkdir -p "$LINK_ROOT"
+# remove any stale link/dir first
+if [[ -L "$LINK_ROOT/$LINK_NAME" || -e "$LINK_ROOT/$LINK_NAME" ]]; then
+    rm -rf "$LINK_ROOT/$LINK_NAME"
+fi
+ln -s "$OUT_DIR" "$LINK_ROOT/$LINK_NAME"
+ls -la "$LINK_ROOT/$LINK_NAME"
+
 echo ""
 echo "[5] Row count check:"
 "$PYTHON" - "$OUT_DIR" <<'PY'
