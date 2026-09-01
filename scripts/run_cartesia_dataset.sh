@@ -12,10 +12,14 @@
 #       run_cartesia_ws_test.sh script. It creates a fresh Python file.
 #
 # Usage:
-#   ./scripts/run_cartesia_dataset.sh [--full]
+#   ./scripts/run_cartesia_dataset.sh                  # first 5 sentences
+#   ./scripts/run_cartesia_dataset.sh --full           # all sentences
+#   ./scripts/run_cartesia_dataset.sh --start 201 --limit 5   # lines 201-205
+#   ./scripts/run_cartesia_dataset.sh --validate
 #
 # Default behaviour: synthesizes the first 5 sentences (test mode).
-# Add --full to process all sentences instead (only after 5-sample test review).
+# --start <LINE> [--limit <N>] starts at a given line using the TRUE line
+#   number for filenames (e.g. line 201 -> 0201.wav).
 #
 # Required environment variable:
 #   CARTESIA_VOICE_ID   - Cartesia voice ID (Arushi voice)
@@ -26,6 +30,7 @@
 #   CARTESIA_LANGUAGE_CODE - override language (default: en)
 #   CARTESIA_SAMPLE_RATE   - override sample rate (default: 16000)
 #   CARTESIA_CLIENT_NAME   - override client name (default: f5tts-cartesia-batch)
+#   CARTESIA_SPEED         - Arushi synthesis speed (default: 0.8)
 #
 set -euo pipefail
 
@@ -38,6 +43,7 @@ LANGUAGE_CODE="${CARTESIA_LANGUAGE_CODE:-en}"
 SAMPLE_RATE_HZ="${CARTESIA_SAMPLE_RATE:-16000}"
 GENERATOR_SAMPLE_HZ="${SAMPLE_RATE_HZ}"
 CLIENT_NAME="${CARTESIA_CLIENT_NAME:-f5tts-cartesia-batch}"
+SPEED="${CARTESIA_SPEED:-0.8}"
 
 # Voice ID required; from environment only.
 if [[ -z "${CARTESIA_VOICE_ID:-}" ]]; then
@@ -113,6 +119,8 @@ GENERATOR_SAMPLE_HZ = int(os.environ.get(
     "CARTESIA_GENERATOR_SAMPLE_RATE", str(SAMPLE_RATE_HZ)))
 CLIENT_NAME = os.environ.get("CARTESIA_CLIENT_NAME", "f5tts-cartesia-batch")
 
+SPEED = float(os.environ.get("CARTESIA_SPEED", "0.8"))
+
 VOICE_ID = os.environ.get("CARTESIA_VOICE_ID")
 if not VOICE_ID:
     raise SystemExit(
@@ -153,6 +161,7 @@ async def synthesize_text(text: str, output_path: str) -> dict:
         f"&language_code={LANGUAGE_CODE}"
         f"&sample_rate_hz={SAMPLE_RATE_HZ}"
         f"&generator_sample_hz={GENERATOR_SAMPLE_HZ}"
+        f"&speed={SPEED}"
     )
     uri = f"{WS_URL}{query}"
 
@@ -569,8 +578,12 @@ def validate_dataset(sentences: list) -> int:
 # ---------------------------------------------------------------------------
 async def main() -> int:
     parser = argparse.ArgumentParser(description="Cartesia batch synthesis")
+    parser.add_argument("--start", type=int, default=1,
+                        help="1-based line number to START from (default: 1). "
+                             "Filenames use the true line number.")
     parser.add_argument("--limit", type=int, default=None,
-                        help="Only synthesize the first N sentences (test mode)")
+                        help="Number of sentences to synthesize from --start "
+                             "(default: all remaining)")
     parser.add_argument("--overwrite", action="store_true",
                         help="Regenerate existing WAV files")
     parser.add_argument("--validate", action="store_true",
@@ -595,8 +608,17 @@ async def main() -> int:
     if args.validate:
         return await validate_dataset(sentences)
 
+    # Determine the slice to process, preserving TRUE line numbers.
+    start = max(1, args.start)
+    if start > total:
+        print(f"[ERROR] --start {args.start} is beyond the {total} sentences.",
+              file=sys.stderr)
+        return 1
     if args.limit is not None:
-        sentences = sentences[:args.limit]
+        end = min(total, start + args.limit - 1)
+    else:
+        end = total
+    print(f"Processing lines {start}..{end} (of {total})")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -610,7 +632,8 @@ async def main() -> int:
 
     run_total = len(sentences)
 
-    for idx, text in enumerate(sentences, start=1):
+    for idx in range(start, end + 1):
+        text = sentences[idx - 1]
         result = await process_sample(idx, total, text, args.overwrite)
         results.append(result)
 
@@ -1039,7 +1062,7 @@ if ! python3 -c "import websockets" 2>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
-# Determine run mode (default: 5-sample test)
+# Determine run mode
 # ---------------------------------------------------------------------------
 cd "$TEST_DIR"
 
@@ -1057,11 +1080,22 @@ case "$MODE" in
         echo "[INFO] Running DATASET COMBINATION (SYSPIN + Cartesia)."
         python3 combine_dataset.py
         ;;
+    --start)
+        # Usage: bash scripts/run_cartesia_dataset.sh --start <LINE> [--limit <N>]
+        START_LINE="${2:?Usage: --start <LINE> [--limit <N>]}"
+        LIMIT_OPT=""
+        if [[ "${3:-}" == "--limit" ]]; then
+            LIMIT_OPT="--limit ${4:?--limit requires a number}"
+        fi
+        echo "[INFO] Running generation starting at line $START_LINE ${LIMIT_OPT:+with $LIMIT_OPT}."
+        echo "[INFO] speed = $SPEED | voice = $CARTESIA_VOICE_ID"
+        python3 generate_dataset.py --start "$START_LINE" $LIMIT_OPT
+        ;;
     *)
         echo "[INFO] Running 5-SAMPLE TEST mode."
         echo "[INFO] This synthesizes only the first 5 sentences."
         echo ""
-        python3 generate_dataset.py --limit 5
+        python3 generate_dataset.py --start 1 --limit 5
         ;;
 esac
 
