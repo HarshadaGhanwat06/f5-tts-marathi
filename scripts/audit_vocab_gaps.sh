@@ -75,7 +75,7 @@ print("Unique characters in transcripts:", len(chars))
 print("Categories present:", sorted(categories))
 print("Current vocab tokens:", len(vocab_tokens))
 
-missing = sorted(ch for ch in chars - vocab_tokens, key=lambda c: ord(c))
+missing = sorted([ch for ch in (chars - vocab_tokens)], key=lambda c: ord(c))
 print("\nMISSING from vocab:", len(missing))
 for ch in missing:
     print(f"   {ch!r} U+{ord(ch):04X} {unicodedata.name(ch,'?')} cat={unicodedata.category(ch)}")
