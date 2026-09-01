@@ -30,7 +30,7 @@
 #   CARTESIA_LANGUAGE_CODE - override language (default: en)
 #   CARTESIA_SAMPLE_RATE   - override sample rate (default: 16000)
 #   CARTESIA_CLIENT_NAME   - override client name (default: f5tts-cartesia-batch)
-#   CARTESIA_SPEED         - Arushi synthesis speed (default: 0.8)
+#   CARTESIA_SPEED         - Arushi synthesis speed multiplier (speaking_rate, default: 0.8)
 #
 set -euo pipefail
 
@@ -161,10 +161,9 @@ async def synthesize_text(text: str, output_path: str) -> dict:
         f"&language_code={LANGUAGE_CODE}"
         f"&sample_rate_hz={SAMPLE_RATE_HZ}"
         f"&generator_sample_hz={GENERATOR_SAMPLE_HZ}"
-        f"&speed={SPEED}"
+        f"&speaking_rate={SPEED}"
     )
     uri = f"{WS_URL}{query}"
-
     audio_chunks = []
     total_bytes = 0
     stream_msg_count = 0
@@ -1088,7 +1087,7 @@ case "$MODE" in
             LIMIT_OPT="--limit ${4:?--limit requires a number}"
         fi
         echo "[INFO] Running generation starting at line $START_LINE ${LIMIT_OPT:+with $LIMIT_OPT}."
-        echo "[INFO] speed = $SPEED | voice = $CARTESIA_VOICE_ID"
+        echo "[INFO] speaking_rate = $SPEED | voice = $CARTESIA_VOICE_ID"
         python3 generate_dataset.py --start "$START_LINE" $LIMIT_OPT
         ;;
     *)
