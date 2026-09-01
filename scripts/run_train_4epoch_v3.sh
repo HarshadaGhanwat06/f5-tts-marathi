@@ -39,7 +39,7 @@ nohup accelerate launch \
     --exp_name F5TTS_v1_Base \
     --dataset_name "$DATASET_NAME" \
     --finetune \
-    --pretrain /root/f5-tts-marathi/f5tts/lib/python3.12/ckpts/Rasa_Marathi_Emotion_Female/model_extended.pt \
+    --pretrain /root/f5-tts-marathi/f5tts/lib/python3.12/ckpts/Rasa_Marathi_Emotion_Female/model_extended_v3.pt \
     --tokenizer custom \
     --tokenizer_path /root/f5-tts-marathi/f5tts/data/Rasa_Marathi_Emotion_Female/vocab_extended.txt \
     --batch_size_per_gpu 4 \
