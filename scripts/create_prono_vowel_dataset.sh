@@ -45,6 +45,7 @@
 #   bash scripts/create_prono_vowel_dataset.sh           # first 5 (test)
 #   bash scripts/create_prono_vowel_dataset.sh --full    # all 528
 #   bash scripts/create_prono_vowel_dataset.sh --start 20 --limit 10
+#   bash scripts/create_prono_vowel_dataset.sh --rebuild-metadata  # reread WAVs -> metadata.csv
 #
 # Then: bash scripts/prepare_dataset_v5.sh   (mix into fine-tuning dataset)
 # =============================================================================
@@ -337,6 +338,9 @@ async def main() -> int:
     parser.add_argument("--start", type=int, default=1)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--rebuild-metadata", action="store_true",
+                        help="Rewrite metadata.csv from sentences.txt + existing "
+                             "WAVs (backfills rows lost by an interrupted run).")
     args = parser.parse_args()
 
     if not os.path.isfile(SENTENCES_FILE):
@@ -354,6 +358,41 @@ async def main() -> int:
         return 1
     end = total if args.limit is None else min(total, start + args.limit - 1)
     print(f"Processing {start}..{end}")
+
+    # ------------------------------------------------------------------
+    # --rebuild-metadata mode: reconstruct metadata.csv from existing WAVs
+    # ------------------------------------------------------------------
+    if args.rebuild_metadata:
+        rows = []
+        missing = 0
+        for idx, text in enumerate(sentences, start=1):
+            fid = f"{idx:04d}"
+            wav = os.path.join(OUTPUT_DIR, f"{fid}.wav")
+            if not os.path.isfile(wav) or os.path.getsize(wav) <= 0:
+                missing += 1
+                continue
+            try:
+                with wave.open(wav, "rb") as wf:
+                    sr = wf.getframerate()
+                    ch = wf.getnchannels()
+                    n = wf.getnframes()
+                dur = n / float(sr) if sr else 0.0
+                rows.append({"id": fid, "text": text,
+                             "audio_file": f"{fid}.wav",
+                             "duration_seconds": round(dur, 6),
+                             "source": "prono_vowel"})
+            except Exception as exc:
+                print(f"[REBUILD] corrupt wav {fid}: {exc}")
+                missing += 1
+        with open(METADATA_CSV, "w", encoding="utf-8", newline="") as cf:
+            writer = csv.DictWriter(cf, fieldnames=[
+                "id", "text", "audio_file", "duration_seconds", "source"])
+            writer.writeheader()
+            for r in rows:
+                writer.writerow(r)
+        print(f"[REBUILD] metadata.csv rewritten: {len(rows)} rows "
+              f"(expected {total}; missing/corrupt: {missing}) -> {METADATA_CSV}")
+        return 0
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     results = []
@@ -375,7 +414,15 @@ async def main() -> int:
             failed_rows.append({"id": res["id"], "text": res["text"],
                                 "error": res.get("error", "")})
 
-    new_rows = [r for r in results if r["status"] == "success"]
+    # Backfill skipped rows too, so an interrupted run never drops rows from
+    # metadata.csv. Dedupe against ids already present.
+    existing_ids = set()
+    if os.path.isfile(METADATA_CSV):
+        with open(METADATA_CSV, "r", encoding="utf-8", newline="") as cf:
+            for row in csv.DictReader(cf):
+                existing_ids.add(row.get("id", ""))
+    new_rows = [r for r in results if r["status"] in ("success", "skip")
+                and r["id"] not in existing_ids]
     if new_rows:
         write_header = not os.path.isfile(METADATA_CSV)
         with open(METADATA_CSV, "a", encoding="utf-8", newline="") as cf:
@@ -388,7 +435,7 @@ async def main() -> int:
                                  "audio_file": r["audio_file"],
                                  "duration_seconds": r["duration_seconds"],
                                  "source": "prono_vowel"})
-        print(f"[INFO] metadata.csv updated: {METADATA_CSV}")
+        print(f"[INFO] metadata.csv updated (+{len(new_rows)} backfilled): {METADATA_CSV}")
 
     with open(FAILED_CSV, "w", encoding="utf-8", newline="") as ff:
         writer = csv.DictWriter(ff, fieldnames=["id", "text", "error"])
@@ -434,6 +481,10 @@ case "$MODE" in
         fi
         echo "[INFO] Generating starting at line $START_LINE $LIMIT_OPT"
         python3 generate_prono_vowel.py --start "$START_LINE" $LIMIT_OPT
+        ;;
+    --rebuild-metadata)
+        echo "[INFO] Rebuilding metadata.csv from existing WAVs (no synthesis)."
+        python3 generate_prono_vowel.py --rebuild-metadata
         ;;
     *)
         echo "[INFO] Running 5-SAMPLE TEST mode."
