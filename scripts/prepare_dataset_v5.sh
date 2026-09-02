@@ -4,9 +4,12 @@
 #
 # Build the PREPROCESSED fine-tuning dataset for Cartesia_Rasa_Combined_v5:
 #
-#   = the complete v3 source            (cartesia_rasa_3h_combined, 2663 rows)
-#   + the candra_e targeted set         (cartesia_candra_e, ~210 rows)
-#   + the pronunciation vowel/matra set (prono_vowel_dataset, 528 rows)
+#   = the complete v3 source            (cartesia_rasa_3h_combined, 2663 rows)  REQUIRED
+#   + the candra_e targeted set         (cartesia_candra_e, ~210 rows)           OPTIONAL*
+#   + the pronunciation vowel/matra set (prono_vowel_dataset, 528 rows)          REQUIRED
+#
+#   * candra_e is included automatically IF present; it is skipped (with a
+#     warning) when it was never generated.
 #
 # Output:
 #   f5tts/data/Cartesia_Rasa_Combined_v5_custom/   (raw.arrow + duration.json)
@@ -42,13 +45,17 @@ echo "Candra_e set         : $CANDRA_META"
 echo "Prono vowel set      : $PRONO_META"
 echo "Output dir           : $OUT_DIR"
 
-for f in "$CANDRA_META" "$PRONO_META"; do
+for f in "$COMBINED_META" "$PRONO_META"; do
     if [[ ! -f "$f" ]]; then
         echo "[ERROR] Not found: $f"
         echo "        Run the matching create_*.sh --full scripts first."
         exit 1
     fi
 done
+if [[ ! -f "$CANDRA_META" ]]; then
+    echo "[WARN] candra_e metadata NOT found: $CANDRA_META"
+    echo "       Skipping candra_e source (v5 = combined + prono_vowel only)."
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Render audio_file|text metadata (absolute wav paths, all three sources)
@@ -72,6 +79,9 @@ counts = {}
 with open(out, "w", encoding="utf-8") as g:
     g.write("audio_file|text\n")
     for meta, wroot, label in sources:
+        if not os.path.isfile(meta):
+            print(f"[WARN] skipping missing source: {label} ({meta})")
+            continue
         cnt = 0
         with open(meta, "r", encoding="utf-8", newline="") as f:
             reader = csv.reader(f)
@@ -105,7 +115,11 @@ for label in "combined" "candra_e" "prono_vowel"; do
         candra_e) f="$CANDRA_META" ;;
         prono_vowel) f="$PRONO_META" ;;
     esac
-    echo "  $label: $(wc -l < "$f") lines (incl header)"
+    if [[ -f "$f" ]]; then
+        echo "  $label: $(wc -l < "$f") lines (incl header)"
+    else
+        echo "  $label: SKIPPED (not present)"
+    fi
 done
 echo "  rendered : $(wc -l < "$TMP_CSV") lines (incl header)"
 echo ""
