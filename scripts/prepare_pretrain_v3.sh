@@ -18,8 +18,10 @@ set -euo pipefail
 
 PYTHON="/root/f5-tts-marathi/f5tts/bin/python3"
 CKPT_IN="/root/f5-tts-marathi/f5tts/lib/python3.12/ckpts/Rasa_Marathi_Emotion_Female/model_extended.pt"
-CKPT_OUT="/root/f5-tts-marathi/f5tts/lib/python3.12/ckpts/Rasa_Marathi_Emotion_Female/model_extended_v3.pt"
+CKPT_OUT="/root/f5-tts-marathi/f5tts/lib/python3.12/ckpts/Rasa_Marathi_Emotion_Female_v3/model_extended.pt"
 VOCAB="/root/f5-tts-marathi/f5tts/data/Rasa_Marathi_Emotion_Female/vocab_extended.txt"
+
+mkdir -p "/root/f5-tts-marathi/f5tts/lib/python3.12/ckpts/Rasa_Marathi_Emotion_Female_v3"
 
 "$PYTHON" - "$CKPT_IN" "$CKPT_OUT" "$VOCAB" <<'PY'
 import sys, torch
