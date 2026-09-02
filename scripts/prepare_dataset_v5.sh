@@ -164,10 +164,16 @@ d = sys.argv[1]
 j = os.path.join(d, "duration.json")
 if os.path.exists(j):
     x = json.load(open(j, encoding="utf-8"))
-    durs = x.get("duration", {})
-    print("duration.json entries:", len(durs))
-    if durs:
+    durs = x.get("duration", [])
+    n = len(durs) if isinstance(durs, (list, dict)) else 0
+    print("duration.json entries:", n)
+    if isinstance(durs, dict) and durs:
         vs = list(durs.values())
+    elif isinstance(durs, list) and durs:
+        vs = durs
+    else:
+        vs = []
+    if vs:
         print("total duration (s):", round(sum(vs), 1), "| avg:", round(sum(vs)/len(vs), 2))
 else:
     print("duration.json NOT FOUND")
