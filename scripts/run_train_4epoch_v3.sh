@@ -34,8 +34,12 @@ echo "[INFO] dataset_name = $DATASET_NAME -> ckpts/$DATASET_NAME/"
 echo "[INFO] vocab         : /root/f5-tts-marathi/f5tts/data/Rasa_Marathi_Emotion_Female/vocab_extended.txt"
 echo "[INFO] Log           : $LOG"
 
-nohup accelerate launch \
-    f5tts/lib/python3.12/site-packages/f5_tts/train/finetune_cli.py \
+# Use the venv's accelerate directly so no venv activation is required.
+ACCELERATE="$REPO_ROOT/f5tts/bin/accelerate"
+FINETUNE_CLI="$REPO_ROOT/f5tts/lib/python3.12/site-packages/f5_tts/train/finetune_cli.py"
+
+nohup "$ACCELERATE" launch \
+    "$FINETUNE_CLI" \
     --exp_name F5TTS_v1_Base \
     --dataset_name "$DATASET_NAME" \
     --finetune \
