@@ -79,16 +79,57 @@ import sys, os, re, csv
 arrow_path, out_csv, report_path, src_spec = sys.argv[1:5]
 
 # ------------------------------------------------------------------
-# 1. Read the exact texts that fed Cartesia_Rasa_Combined_v7
+# 1. Read the exact texts that fed Cartesia_Rasa_Combined_v7.
+#    F5-TTS writes raw.arrow via df.to_parquet() (misleading .arrow
+#    extension), so try parquet first, then arrow-IPC, then feather.
 # ------------------------------------------------------------------
+import pyarrow
+
+def load_table(path: str):
+    """Return a pyarrow Table from a file written in any of: parquet,
+    arrow-IPC (file/stream), or feather. Handles the .arrow-is-parquet
+    quirk used by prepare_csv_wavs.py."""
+    tried = []
+    # 1) parquet
+    try:
+        import pyarrow.parquet as pq
+        tried.append("parquet")
+        return pq.read_table(path)
+    except Exception as e:
+        parquet_err = e
+    # 2) arrow-IPC file
+    try:
+        import pyarrow.ipc as ipc
+        with open(path, "rb") as f:
+            tried.append("arrow-ipc-file")
+            return ipc.open_file(f).read_all()
+    except Exception as e:
+        ipc_err = e
+    # 3) arrow-IPC stream
+    try:
+        import pyarrow.ipc as ipc
+        with open(path, "rb") as f:
+            tried.append("arrow-ipc-stream")
+            return ipc.open_stream(f).read_all()
+    except Exception as e:
+        stream_err = e
+    # 4) feather
+    try:
+        import pyarrow.feather as ft
+        tried.append("feather")
+        return ft.read_table(path)
+    except Exception as e:
+        feather_err = e
+    print(f"  [ERROR] Could not read {path} as {', '.join(tried)}")
+    print("  parquet :", str(parquet_err)[:120])
+    print("  ipc-file:", str(ipc_err)[:120])
+    print("  ipc-strm:", str(stream_err)[:120])
+    print("  feather :", str(feather_err)[:120])
+    raise SystemExit(1)
+
 texts = []
-if arrow_path.endswith(".parquet"):
-    import pyarrow.parquet as pq
-    tab = pq.read_table(arrow_path)
-else:
-    import pyarrow.ipc as ipc
-    with open(arrow_path, "rb") as f:
-        tab = ipc.open_file(f).read_all()
+tab = load_table(arrow_path)
+print("raw.arrow read successfully (format auto-detected).")
 cols = tab.column_names
 print("raw.arrow columns:", cols)
 # text column is usually "text"; fall back otherwise
