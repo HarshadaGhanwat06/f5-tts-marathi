@@ -3,10 +3,16 @@
 # prepare_pretrain_v9.sh
 #
 # STEP 0 (vocab check) + STEP 3.3 (embedding-shape verify) - build the v9
-# warm-start pretrain from the v8 trained checkpoint.
+# warm-start pretrain from the v7 trained checkpoint.
+#
+# NOTE: This is the CHANDRA FOCUSED WORDS training run (v9) - one sentence per
+# word from the ॅ/ॲ (U+0945/U+0972) chandra word-list dataset (Chandra_Words_v9).
+# The warm-start base is ckpts/Cartesia_Rasa_Combined_v7/model_last.pt (the
+# current latest/live checkpoint). Dataset/model naming conventions are left
+# unchanged.
 #
 # Reads /tmp/v9_vocab_state.txt written by this script itself (embedded step 0):
-#   - MISSING empty  : both ॅ and ॲ present -> PURE COPY of v8's model_last.pt
+#   - MISSING empty  : both ॅ and ॲ present -> PURE COPY of v7's model_last.pt
 #                      to ckpts/Rasa_Marathi_Emotion_Female_v9/model_extended.pt
 #                      (basename MUST be model_extended.pt for finetune_cli).
 #   - MISSING nonempty: EMBEDDING SURGERY (same procedure as the earlier
@@ -20,9 +26,9 @@
 # Verifies (Step 3.3) the output checkpoint's text_embed shape ==
 # [vocab_line_count + 1, 512].
 #
-# v9 EXPECTATION: v8 already ensured ॅ/ॲ in the vocab and ckpts/...v8 was
-# trained on them, so this will normally be a pure copy. The surgery path stays
-# for safety but should print "no missing char".
+# v9 EXPECTATION: v7 (and v8) already ensured ॅ/ॲ in the vocab and the current
+# live checkpoint ckpts/...v7 was trained on them, so this will normally be a
+# pure copy. The surgery path stays for safety but should print "no missing char".
 #
 # Usage (server, after prepare_dataset_v9.sh):
 #   bash scripts/prepare_pretrain_v9.sh
@@ -34,7 +40,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 PYTHON="/root/f5-tts-marathi/f5tts/bin/python3"
-CKPT_IN="/root/f5-tts-marathi/f5tts/lib/python3.12/ckpts/Cartesia_Rasa_Combined_v8/model_last.pt"
+CKPT_IN="/root/f5-tts-marathi/f5tts/lib/python3.12/ckpts/Cartesia_Rasa_Combined_v7/model_last.pt"
 CKPT_OUT="/root/f5-tts-marathi/f5tts/lib/python3.12/ckpts/Rasa_Marathi_Emotion_Female_v9/model_extended.pt"
 VOCAB="/root/f5-tts-marathi/f5tts/data/Rasa_Marathi_Emotion_Female/vocab_extended.txt"
 STATE_FILE="/tmp/v9_vocab_state.txt"
@@ -85,9 +91,9 @@ for f in "$CKPT_IN" "$VOCAB"; do
 done
 
 echo "============================================================"
-echo " Prepare v9 pretrain (warm start from v8)"
+echo " Prepare v9 pretrain (warm start from v7) - CHANDRA FOCUSED"
 echo "============================================================"
-echo "Input  (v8 trained)  : $CKPT_IN"
+echo "Input  (v7 trained)  : $CKPT_IN"
 echo "Output (v9 pretrain) : $CKPT_OUT"
 echo "Vocab                : $VOCAB ($VOCAB_COUNT tokens)"
 echo "Chars missing        : ${MISSING:-<none>}"

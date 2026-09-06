@@ -4,13 +4,18 @@
 #
 # STEP 3 (pre-flight) + STEP 4 (launch) for Chandra_Words_v9.
 #
-# Word-list ॅ/ॲ targeted fine-tune on top of the v8 trained checkpoint:
+# CHANDRA FOCUSED WORDS training (v9) - one sentence per ॅ/ॲ (U+0945/U+0972)
+# word from the word-list dataset Chandra_Words_v9 (see create_chandra_words
+# _dataset.sh). Fine-tuned on top of the v7 trained checkpoint (the current
+# latest/live checkpoint). Naming conventions are left unchanged.
+#
+# Word-list ॅ/ॲ targeted fine-tune on top of the v7 trained checkpoint:
 #   - warm-start: ckpts/Rasa_Marathi_Emotion_Female_v9/model_extended.pt
-#                 (prepare_pretrain_v9.sh output, based on v8's model_last.pt)
+#                 (prepare_pretrain_v9.sh output, based on v7's model_last.pt)
 #   - fine-tuned on: Chandra_Words_v9 (one sentence per ॅ/ॲ word, word-list
 #                    driven; see create_chandra_words_dataset.sh)
 #   - 10 epochs, learning_rate 1e-5, batch 4 (sample) - same schedule shape
-#     as the v8 run, recomputed with THIS dataset's step count.
+#     as the previous run, recomputed with THIS dataset's step count.
 #
 # save_per_updates / last_per_updates / warmup are proportional to this
 # dataset's per-epoch step count (steps/epoch = samples / 4).
@@ -46,7 +51,8 @@ FINETUNE_CLI="$REPO_ROOT/f5tts/lib/python3.12/site-packages/f5_tts/train/finetun
 
 echo "============================================================"
 echo " Chandra_Words_v9 - 10 epoch fine-tune (word-list ॅ/ॲ fix)"
-echo " Pretrain: v8 (Cartesia_Rasa_Combined_v8/model_last.pt)"
+echo " CHANDRA FOCUSED WORDS training - warm start from v7"
+echo " Pretrain base: v7 (Cartesia_Rasa_Combined_v7/model_last.pt)"
 echo "============================================================"
 
 # ---------------------------------------------------------------------------
@@ -67,7 +73,7 @@ if [[ ! -d "$PREP_DIR" ]]; then
     exit 1
 fi
 
-# 3.0 - confirm the pretrain really is v8-based (name + embedding shape sanity)
+# 3.0 - confirm the pretrain really is v7-based (name + embedding shape sanity)
 if "$REPO_ROOT/f5tts/bin/python3" - "$PRETRAIN" "$VOCAB" <<'PY'
 import sys, torch
 ckpt, vocab = sys.argv[1], sys.argv[2]
@@ -173,7 +179,8 @@ echo "  keep_last_n      : 1"
 echo ""
 echo "[INFO] Launching fine-tune in background."
 echo "[INFO] dataset_name  : $DATASET_NAME"
-echo "[INFO] pretrain      : $PRETRAIN (v8 warm start)"
+echo "[INFO] CHANDRA FOCUSED WORDS training (v9) - warm start from v7"
+echo "[INFO] pretrain      : $PRETRAIN (v7 warm start)"
 echo "[INFO] tokenizer     : custom ($VOCAB)"
 echo "[INFO] log           : $LOG"
 
