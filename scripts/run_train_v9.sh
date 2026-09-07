@@ -14,7 +14,7 @@
 #                 (prepare_pretrain_v9.sh output, based on v7's model_last.pt)
 #   - fine-tuned on: Chandra_Words_v9 (one sentence per ॅ/ॲ word, word-list
 #                    driven; see create_chandra_words_dataset.sh)
-#   - 10 epochs, learning_rate 1e-5, batch 4 (sample) - same schedule shape
+#   - 20 epochs, learning_rate 1e-5, batch 4 (sample) - same schedule shape
 #     as the previous run, recomputed with THIS dataset's step count.
 #
 # save_per_updates / last_per_updates / warmup are proportional to this
@@ -50,7 +50,7 @@ ACCELERATE="$REPO_ROOT/f5tts/bin/accelerate"
 FINETUNE_CLI="$REPO_ROOT/f5tts/lib/python3.12/site-packages/f5_tts/train/finetune_cli.py"
 
 echo "============================================================"
-echo " Chandra_Words_v9 - 10 epoch fine-tune (word-list ॅ/ॲ fix)"
+echo " Chandra_Words_v9 - 20 epoch fine-tune (word-list ॅ/ॲ fix)"
 echo " CHANDRA FOCUSED WORDS training - warm start from v7"
 echo " Pretrain base: v7 (Cartesia_Rasa_Combined_v7/model_last.pt)"
 echo "============================================================"
@@ -160,7 +160,7 @@ if [[ -z "$SAMPLES" || "$SAMPLES" -eq 0 ]]; then
 fi
 BATCH=4
 STEPS_PER_EPOCH=$(( (SAMPLES + BATCH - 1) / BATCH ))
-TOTAL_UPDATES=$(( STEPS_PER_EPOCH * 10 ))
+TOTAL_UPDATES=$(( STEPS_PER_EPOCH * 20 ))
 
 SAVE_PER=$STEPS_PER_EPOCH
 LAST_PER=$STEPS_PER_EPOCH
@@ -170,7 +170,7 @@ WARMUP=$(( TOTAL_UPDATES / 20 ))
 echo "  samples          : $SAMPLES"
 echo "  batch            : $BATCH (sample)"
 echo "  steps/epoch      : $STEPS_PER_EPOCH"
-echo "  total updates    : $TOTAL_UPDATES (10 epochs)"
+echo "  total updates    : $TOTAL_UPDATES (20 epochs)"
 echo "  num_warmup_updates: $WARMUP"
 echo "  save_per_updates : $SAVE_PER"
 echo "  last_per_updates : $LAST_PER"
@@ -194,7 +194,7 @@ nohup "$ACCELERATE" launch \
     --tokenizer_path "$VOCAB" \
     --batch_size_per_gpu "$BATCH" \
     --batch_size_type sample \
-    --epochs 10 \
+    --epochs 20 \
     --num_warmup_updates "$WARMUP" \
     --save_per_updates "$SAVE_PER" \
     --last_per_updates "$LAST_PER" \
